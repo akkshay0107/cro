@@ -10,7 +10,7 @@ use std::vec;
 static T: Lazy<[Array3<f64>; 3]> = Lazy::new(|| {
     [
         arr3(&[[[5.018]]]),
-        arr3(&[[[10.825, 10.7473125, 10.465]]]),
+        arr3(&[[[10.825], [10.7473125], [10.465]]]),
         Array::from_shape_vec(
             (3, 35, 1),
             vec![
@@ -141,7 +141,6 @@ fn tdt(m: &MolStructure) -> f64 {
     }
     res
 }
-
 fn main() {
     let demand: i32 = 959;
     let graph_dims = [(1, 1, 1), (1, 3, 1), (3, 35, 1)];

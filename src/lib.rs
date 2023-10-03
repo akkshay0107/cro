@@ -14,6 +14,13 @@ static NODE_DEMAND: Lazy<Vec<i32>> = Lazy::new(|| {
     ]
 });
 
+// static NODE_DEMAND: Lazy<Vec<i32>> = Lazy::new(|| {
+//     vec![
+//         5, 1, 2, 4, 2, 2, 1, 3, 30, 2, 30, 0, 2, 1, 1, 1, 29, 6, 1, 1, 12, 1, 121, 3, 12, 3, 0, 2,
+//         3, 1, 5, 236, 2, 1, 3,
+//     ]
+// });
+
 pub struct MolStructure {
     pub w: [Array3<i32>; 3],
     pub d: i32,
@@ -151,7 +158,7 @@ impl CRO {
             demand,
         }
     }
-    fn get_neighbourhood(&self, a: &MolStructure) -> MolStructure {
+    fn get_neighbourhood(&self, a: &MolStructure, sigma: f64) -> MolStructure {
         let mut rng = rand::thread_rng();
         let mut a_: MolStructure = MolStructure::copy(a);
         // two opt exchanging
@@ -167,7 +174,7 @@ impl CRO {
             a_.w[2][[i2, j, k2]] = temp;
         }
         // gaussian mutation of last layer
-        let gaussian = Normal::new(0., 5.).unwrap();
+        let gaussian = Normal::new(0., sigma).unwrap();
         for j in 0..self.dims[2].2 {
             let mut v_delta: Vec<i32> = Vec::<i32>::new();
             let mut half: usize = a.w[2].raw_dim()[0] * a.w[2].raw_dim()[2];
@@ -203,36 +210,28 @@ impl CRO {
                 slice.assign(&m.mapv(|y: f64| y as i32));
             }
         }
-        // work backwards assigning new routes randomly as per node demand
+        // work backwards adjusting routes in accordance to last layer
         for x in (0..2).rev() {
-            let mut l: Array3<i32> = Array3::zeros(self.dims[x]);
             let int_demand = a_.w[x + 1].sum_axis(Axis(2)).sum_axis(Axis(1));
             for j in 0..self.dims[x].1 {
-                let prod: usize = self.dims[x].0 * self.dims[x].2;
-                if prod != 1 {
-                    let cnt = int_demand[j] + (prod as i32);
-                    let mut vals: Vec<i32> = (1..cnt).choose_multiple(&mut rng, prod - 1);
-                    vals.sort_unstable();
-                    let mut r: Vec<i32> = vec![0; prod];
-                    r[0] = vals[0] - 1;
-                    for i in 1..prod - 1 {
-                        r[i] = vals[i] - vals[i - 1] - 1;
+                let mut slice = a_.w[x].slice_mut(s![.., j, ..]);
+                let mut m = slice.mapv(|y: i32| f64::from(y));
+                m = &m * ((int_demand[j] as f64) / (slice.sum() as f64));
+                let mut rnc: f64 = 0.0;
+                for i in 0..m.shape()[0] {
+                    for j in 0..m.shape()[1] {
+                        m[[i, j]] += rnc;
+                        rnc = m[[i, j]] - m[[i, j]].round();
+                        m[[i, j]] = m[[i, j]].round();
                     }
-                    r[prod - 1] = cnt - vals[prod - 2] - 1;
-                    let arr = Array::from_shape_vec((self.dims[x].0, self.dims[x].2), r).unwrap();
-                    l.slice_mut(s![.., j, ..]).assign(&arr);
-                } else {
-                    let r: Vec<i32> = vec![int_demand[j]];
-                    let arr = Array::from_shape_vec((self.dims[x].0, self.dims[x].2), r).unwrap();
-                    l.slice_mut(s![.., j, ..]).assign(&arr);
                 }
+                slice.assign(&m.mapv(|y: f64| y as i32));
             }
-            a_.w[x].assign(&l);
         }
         a_
     }
     fn on_wall_ineffective_collision(&mut self, z: usize) {
-        let w_: MolStructure = self.get_neighbourhood(&self.molecules[z].w);
+        let w_: MolStructure = self.get_neighbourhood(&self.molecules[z].w, 2.0);
         let pe_: f64 = (self.objective_fn)(&w_);
         let m: &mut Molecule = &mut self.molecules[z];
         m.num_hit += 1;
@@ -253,8 +252,8 @@ impl CRO {
     }
     fn intermolecular_ineffective_collision(&mut self, y: usize, z: usize) {
         assert!(y != z);
-        let w_1: MolStructure = self.get_neighbourhood(&self.molecules[y].w);
-        let w_2: MolStructure = self.get_neighbourhood(&self.molecules[z].w);
+        let w_1: MolStructure = self.get_neighbourhood(&self.molecules[y].w, 1.0);
+        let w_2: MolStructure = self.get_neighbourhood(&self.molecules[z].w, 1.0);
         let m: &mut Vec<Molecule> = &mut self.molecules;
         let pe_1: f64 = (self.objective_fn)(&w_1);
         let pe_2: f64 = (self.objective_fn)(&w_2);
@@ -286,8 +285,8 @@ impl CRO {
     fn decomposition(&mut self, z: usize) {
         let delta1: f64 = Uniform::new(0., 1.).sample(&mut rand::thread_rng());
         let delta2: f64 = Uniform::new(0., 1.).sample(&mut rand::thread_rng());
-        let w_1: MolStructure = self.get_neighbourhood(&self.molecules[z].w);
-        let w_2: MolStructure = self.get_neighbourhood(&self.molecules[z].w);
+        let w_1: MolStructure = self.get_neighbourhood(&self.molecules[z].w, 5.0);
+        let w_2: MolStructure = self.get_neighbourhood(&self.molecules[z].w, 5.0);
         let pe_1: f64 = (self.objective_fn)(&w_1);
         let pe_2: f64 = (self.objective_fn)(&w_2);
         let m: &mut Molecule = &mut self.molecules[z];
@@ -369,29 +368,21 @@ impl CRO {
             }
         }
         for x in (0..2).rev() {
-            let mut l: Array3<i32> = Array3::zeros(self.dims[x]);
             let int_demand = w_.w[x + 1].sum_axis(Axis(2)).sum_axis(Axis(1));
             for j in 0..self.dims[x].1 {
-                let prod: usize = self.dims[x].0 * self.dims[x].2;
-                if prod != 1 {
-                    let cnt = int_demand[j] + (prod as i32);
-                    let mut vals: Vec<i32> = (1..cnt).choose_multiple(&mut rng, prod - 1);
-                    vals.sort_unstable();
-                    let mut r: Vec<i32> = vec![0; prod];
-                    r[0] = vals[0] - 1;
-                    for i in 1..prod - 1 {
-                        r[i] = vals[i] - vals[i - 1] - 1;
+                let mut slice = w_.w[x].slice_mut(s![.., j, ..]);
+                let mut m = slice.mapv(|y: i32| f64::from(y));
+                m = &m * ((int_demand[j] as f64) / (slice.sum() as f64));
+                let mut rnc: f64 = 0.0;
+                for i in 0..m.shape()[0] {
+                    for j in 0..m.shape()[1] {
+                        m[[i, j]] += rnc;
+                        rnc = m[[i, j]] - m[[i, j]].round();
+                        m[[i, j]] = m[[i, j]].round();
                     }
-                    r[prod - 1] = cnt - vals[prod - 2] - 1;
-                    let arr = Array::from_shape_vec((self.dims[x].0, self.dims[x].2), r).unwrap();
-                    l.slice_mut(s![.., j, ..]).assign(&arr);
-                } else {
-                    let r: Vec<i32> = vec![int_demand[j]];
-                    let arr = Array::from_shape_vec((self.dims[x].0, self.dims[x].2), r).unwrap();
-                    l.slice_mut(s![.., j, ..]).assign(&arr);
                 }
+                slice.assign(&m.mapv(|y: f64| y as i32));
             }
-            w_.w[x].assign(&l);
         }
         let pe_: f64 = (self.objective_fn)(&w_);
         if (m1.pe + m1.ke + m2.pe + m2.ke) > pe_ {
@@ -436,6 +427,17 @@ impl CRO {
                 self.best_pe = m.min_pe;
                 self.best_soln = MolStructure::copy(&m.min_w);
             }
+        }
+        if (self.molecules.len() as i32) < self.pop_size / 2 {
+            self.molecules.push(Molecule {
+                w: MolStructure::copy(&self.best_soln),
+                pe: self.best_pe,
+                ke: 400.0,
+                num_hit: 0,
+                min_w: MolStructure::copy(&self.best_soln),
+                min_pe: self.best_pe,
+                min_hit: 0,
+            });
         }
     }
 }
